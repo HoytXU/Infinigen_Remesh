@@ -4,55 +4,10 @@ import subprocess
 import argparse
 from multiprocessing import Pool
 
-# BASE_DIR = "/oss/lvzhaoyang/shape2code/Infinigen/data_v4"
-# VOXEL_SIZE = 0.002
-# MAX_PROCESSES = 4  # 并行数
-#
-# def get_tasks(limit=None, cache_file="file_list.txt"):
-#     if os.path.exists(cache_file):
-#         print(f"📄 Loading cached file list from '{cache_file}'...")
-#         with open(cache_file, "r") as f:
-#             obj_paths = [line.strip() for line in f] 
-#     else:
-#         print(f"📦 Scanning directories under {BASE_DIR} ...")
-#         obj_paths = []
-#         factory_dirs = sorted([d for d in os.listdir(BASE_DIR) if os.path.isdir(os.path.join(BASE_DIR, d))])
-#         total = len(factory_dirs)
-#
-#         for idx, factory in enumerate(factory_dirs):
-#             print(f"[{idx:02}/{total}] {factory}")
-#             factory_path = os.path.join(BASE_DIR, factory)
-#
-#             sample_dirs = sorted(os.listdir(factory_path))
-#             for sample in sample_dirs:
-#                 sample_path = os.path.join(factory_path, sample)
-#                 obj_path = os.path.join(sample_path, "objs", "whole.obj")
-#                 if os.path.isfile(obj_path):
-#                     print(f"    ├── {sample} → ✅ found")
-#                     obj_paths.append(obj_path)
-#                 else:
-#                     print(f"    ├── {sample} → ❌ missing")
-#
-#
-#         print(f"💾 Caching {len(obj_paths)} file paths to '{cache_file}'...")
-#         with open(cache_file, "w") as f:
-#             for path in obj_paths:
-#                 f.write(path + "\n")
-#
-#     tasks = [(p, os.path.join(os.path.dirname(p), "whole_remesh.obj")) for p in obj_paths]
-#
-#     if limit:
-#         tasks = tasks[:limit]
-#         print(f"🧪 Limiting to first {limit} tasks")
-#
-#     print(f"✅ Total collected tasks: {len(tasks)}\n")
-#     return tasks
-#
-
 BASE_DIR = "/cpfs05/shared/landmark_3dgen/lvzhaoyang_group/shape2code/datasets/part2code/meshes"
-VOXEL_SIZE = 0.002
+VOXEL_SIZE = 0.005
 TARGET_FACES = 50000
-MAX_PROCESSES = 4 
+MAX_PROCESSES = 8 
 CACHE_FILE = "relative_file_list.txt"
 
 def get_tasks(limit=None):
