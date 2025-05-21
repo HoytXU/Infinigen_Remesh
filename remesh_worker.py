@@ -64,9 +64,8 @@ start_decimate = time.time()
 auto_decimate(obj)
 end_decimate = time.time()
 
-# === 4. 导出 ===
 start_export = time.time()
-bpy.ops.export_scene.obj(filepath=output_path, use_selection=True)
+bpy.ops.export_scene.obj(filepath=output_path, use_selection=True, use_materials=False)
 end_export = time.time()
 
 # === 总结报告 ===
