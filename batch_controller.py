@@ -7,7 +7,7 @@ from multiprocessing import Pool
 BASE_DIR = "/cpfs05/shared/landmark_3dgen/lvzhaoyang_group/shape2code/datasets/part2code/meshes"
 VOXEL_SIZE = 0.005
 TARGET_FACES = 50000
-MAX_PROCESSES = 8 
+MAX_PROCESSES = 4 
 CACHE_FILE = "relative_file_list.txt"
 
 def get_tasks(limit=None):
