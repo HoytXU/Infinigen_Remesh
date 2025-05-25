@@ -25,7 +25,10 @@ MAX_RETRIES = 3  # Maximum number of retry attempts for failed tasks
 
 # Default directory for progress tracking files (can be overridden via command-line)
 # Will be updated from command-line arguments
-PROGRESS_DIR = "."  # Current directory by default
+PROGRESS_DIR = "/cpfs05/shared/landmark_3dgen/lvzhaoyang_group/shape2code/datasets/part2code/remeshes_v2/progress"  # Current directory by default
+
+# if path not exist, create it
+os.makedirs(PROGRESS_DIR, exist_ok=True)    
 
 # Progress tracking files
 def get_progress_files():
@@ -94,7 +97,7 @@ def detect_completed_tasks():
     # Check if corresponding output files exist
     for rel_path in all_relative_paths:
         input_path = os.path.join(BASE_DIR, rel_path)
-        output_path = os.path.join(REMESH_DIR, "remeshes", rel_path)
+        output_path = os.path.join(REMESH_DIR, "remeshes_v2", rel_path)
         
         # If output exists, mark as completed
         if os.path.exists(output_path):
@@ -142,7 +145,7 @@ def get_tasks(limit=None, resume=True, balance_by_size=False):
     all_paths = []
     for rel_path in relative_paths:
         input_path = os.path.join(BASE_DIR, rel_path)
-        output_path = os.path.join(REMESH_DIR, "remeshes", rel_path)
+        output_path = os.path.join(REMESH_DIR, "remeshes_v2", rel_path)
         all_paths.append((input_path, output_path, rel_path))
     
     if balance_by_size and world_size > 1:
@@ -480,7 +483,7 @@ def main():
         tasks = []
         for input_path in failed_tasks:
             rel_path = os.path.relpath(input_path, BASE_DIR)
-            output_path = os.path.join(REMESH_DIR, "remeshes", rel_path)
+            output_path = os.path.join(REMESH_DIR, "remeshes_v2", rel_path)
             tasks.append((input_path, output_path))
     else:
         # Normal mode with optional resume
