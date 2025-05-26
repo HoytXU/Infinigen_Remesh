@@ -230,16 +230,62 @@ def get_tasks(limit=None, resume=True, balance_by_size=False):
         
         # Get file sizes and sort paths by size (largest first)
         sized_paths = []
-        for i, (input_path, output_path, rel_path) in enumerate(all_paths):
-            # Show progress periodically for large datasets
-            if SHOW_PROGRESS and i % 1000 == 0 and i > 0:
-                print(f"\r⏳ Getting file sizes: {i}/{len(all_paths)} ({i/len(all_paths)*100:.1f}%)", end="", flush=True)
-                
-            size = get_file_size(input_path, size_cache)
-            sized_paths.append((size, input_path, output_path, rel_path))
+        
+        # Check if we should use sampling
+        sample_size = args.sample_sizes if 'args' in globals() and hasattr(args, 'sample_sizes') else 400
+        if sample_size > 0 and sample_size < len(all_paths):
+            print(f"📋 Using file size sampling: measuring {sample_size} of {len(all_paths)} files")
+            # Take a distributed sample of files
+            sample_step = len(all_paths) // sample_size
+            sampled_indices = list(range(0, len(all_paths), sample_step))[:sample_size]
             
-        if SHOW_PROGRESS:
-            print()  # New line after progress output
+            # Use estimated sizes for non-sampled files
+            total_sampled_size = 0
+            
+            if TQDM_AVAILABLE and SHOW_PROGRESS:
+                sample_iterator = tqdm(sampled_indices, desc="Sampling file sizes", unit="file")
+            else:
+                sample_iterator = sampled_indices
+                
+            for idx in sample_iterator:
+                input_path, output_path, rel_path = all_paths[idx]
+                size = get_file_size(input_path, size_cache)
+                total_sampled_size += size
+            
+            # Compute average file size from samples
+            avg_size = total_sampled_size / len(sampled_indices) if sampled_indices else 0
+            print(f"📋 Average file size from sampling: {avg_size / 1024:.2f} KB")
+            
+            # Create sized paths with actual sizes for sampled files, avg size for others
+            if TQDM_AVAILABLE and SHOW_PROGRESS:
+                # Use tqdm for a proper progress bar
+                iterator = tqdm(enumerate(all_paths), total=len(all_paths), desc="Processing files", unit="file",
+                               bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+            else:
+                # No progress bar
+                iterator = enumerate(all_paths)
+                
+            for i, (input_path, output_path, rel_path) in iterator:
+                if i in sampled_indices:
+                    # For sampled files, get actual size
+                    size = get_file_size(input_path, size_cache)
+                else:
+                    # For non-sampled files, use average size
+                    size = avg_size
+                sized_paths.append((size, input_path, output_path, rel_path))
+        else:
+            # Measure all files using a proper progress bar
+            if TQDM_AVAILABLE and SHOW_PROGRESS:
+                # Use tqdm for a proper progress bar
+                iterator = tqdm(all_paths, desc="Getting file sizes", unit="file", 
+                               bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+            else:
+                # No progress bar if tqdm not available or progress hidden
+                iterator = all_paths
+                
+            for input_path, output_path, rel_path in iterator:
+                size = get_file_size(input_path, size_cache)
+                sized_paths.append((size, input_path, output_path, rel_path))
             
         # Save the updated cache for future runs
         if len(size_cache) > initial_cache_size:
@@ -253,12 +299,35 @@ def get_tasks(limit=None, resume=True, balance_by_size=False):
         
         print(f"⏱️ Size-based sorting completed in {time.time() - start_time:.2f} seconds")
         
-        # Distribute tasks in a round-robin fashion by size
+        # Distribute tasks using true load-balanced Round-Robin based on accumulated size
         node_assignments = [[] for _ in range(world_size)]
-        for i, (size, input_path, output_path, rel_path) in enumerate(sized_paths):
-            # Assign to node with least total size
-            target_node = i % world_size
+        node_sizes = [0] * world_size  # Track total size assigned to each node
+        
+        print("📊 Assigning files to nodes based on size balancing...")
+        
+        # Assign each file to the node with the least total size so far
+        if TQDM_AVAILABLE and SHOW_PROGRESS:
+            # Use tqdm for a proper progress bar
+            iterator = tqdm(sized_paths, desc="Balancing nodes", unit="file",
+                         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+        else:
+            # No progress bar
+            iterator = sized_paths
+            
+        for size, input_path, output_path, rel_path in iterator:
+            # Find node with minimum current load
+            target_node = node_sizes.index(min(node_sizes))
+            
+            # Assign this file to that node
             node_assignments[target_node].append((input_path, output_path, rel_path))
+            
+            # Update the node's total size
+            node_sizes[target_node] += size
+        
+        # Print size distribution across nodes
+        if SHOW_PROGRESS:
+            for i, total_size in enumerate(node_sizes):
+                print(f"   Node {i}: {total_size / (1024*1024):.2f} MB, {len(node_assignments[i])} files")
         
         # Get paths for this rank
         assigned_paths = node_assignments[rank]
@@ -290,14 +359,14 @@ def get_tasks(limit=None, resume=True, balance_by_size=False):
         for task in all_tasks:
             input_path, output_path = task
             if input_path in completed_tasks:
-                print(f"⏭️ Skipping already completed: {input_path}")
+                # print(f"⏭️ Skipping already completed: {input_path}")
                 continue
                 
             # Check if output already exists (as an additional check)
             if os.path.exists(output_path):
                 if input_path not in completed_tasks:
                     completed_tasks.append(input_path)
-                print(f"⏭️ Output exists, skipping: {input_path}")
+                # print(f"⏭️ Output exists, skipping: {input_path}")
                 continue
                 
             # Add failed tasks with their retry count
@@ -528,6 +597,7 @@ def main():
     parser.add_argument("--retry-failed", action="store_true", help="Only retry previously failed tasks")
     parser.add_argument("--progress-dir", type=str, default=".", help="Directory to store progress tracking files")
     parser.add_argument("--balance-by-size", action="store_true", help="Balance workload by file size instead of count")
+    parser.add_argument("--sample-sizes", type=int, default=0, help="Only measure a sample of files for size-based balancing (0=all files)")
     parser.add_argument("--dynamic", action="store_true", help="Use dynamic work stealing for better CPU utilization")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--log-file", type=str, help="Path to log file (default: progress_dir/batch_log.txt)")
