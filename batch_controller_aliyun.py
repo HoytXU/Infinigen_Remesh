@@ -15,16 +15,27 @@ def get_tasks(limit=None):
         with open(CACHE_FILE, "r") as f:
             relative_paths = [line.strip() for line in f if line.strip()]
     else:
-        raise RuntimeError(f"{CACHE_FILE} not found. Please generate it beforehand.")
+        # Use os.walk to generate the file list more efficiently
+        print(f"\U0001F4C4 Generating relative file list using os.walk...")
+        relative_paths = []
+        for root, dirs, files in os.walk(BASE_DIR):
+            for file in files:
+                if file.endswith('.obj') or file.endswith('.ply'):
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, BASE_DIR)
+                    relative_paths.append(rel_path)
+        
+        # Cache the results for future runs
+        with open(CACHE_FILE, "w") as f:
+            f.write("\n".join(relative_paths))
+        print(f"\U0001F4C4 Saved {len(relative_paths)} paths to '{CACHE_FILE}'")
 
     # 根据环境变量自动划分任务（DLC 多节点）
     rank = int(os.getenv("RANK", "0"))
     world_size = int(os.getenv("WORLD_SIZE", "1"))
 
-    chunk_size = (len(relative_paths) + world_size - 1) // world_size
-    start = rank * chunk_size
-    end = min((rank + 1) * chunk_size, len(relative_paths))
-    relative_paths = relative_paths[start:end]
+    # Use round-robin allocation instead of chunking
+    relative_paths = [p for i, p in enumerate(relative_paths) if i % world_size == rank]
 
     print(f"\U0001F7A9 Assigned task slice for RANK={rank} (total {len(relative_paths)} files)")
 
@@ -32,7 +43,7 @@ def get_tasks(limit=None):
     tasks = [
         (
             os.path.join(BASE_DIR, rel_path),
-            os.path.join(REMESH_DIR, "remeshes", rel_path)
+            os.path.join(REMESH_DIR, "remeshes_v3", rel_path)
         )
         for rel_path in relative_paths
     ]
@@ -47,6 +58,12 @@ def get_tasks(limit=None):
 def run_blender_remesh(task):
     input_path, output_path = task
     print(f"🚀 [START] {input_path}")
+    
+    # Create output directory if it doesn't exist
+    output_dir = os.path.dirname(output_path)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    
     cmd = [
         "blender", "--background",
         "--python", "remesh_worker.py",
