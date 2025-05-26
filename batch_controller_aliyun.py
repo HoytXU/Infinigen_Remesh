@@ -25,6 +25,8 @@ def get_tasks(limit=None):
                     rel_path = os.path.relpath(full_path, BASE_DIR)
                     relative_paths.append(rel_path)
         
+        # Sort paths for consistent ordering
+        relative_paths.sort()
         # Cache the results for future runs
         with open(CACHE_FILE, "w") as f:
             f.write("\n".join(relative_paths))
