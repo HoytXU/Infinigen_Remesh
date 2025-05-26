@@ -85,29 +85,59 @@ def load_progress(auto_detect=False):
     return completed_tasks, failed_tasks
 
 def detect_completed_tasks():
-    """Auto-detect completed tasks by scanning for existing output files"""
+    """Auto-detect completed tasks by scanning for existing output files (optimized version)"""
     # Get all possible input files
     with open(CACHE_FILE, "r") as f:
         all_relative_paths = [line.strip() for line in f if line.strip()]
-        
-    REMESH_DIR = BASE_DIR.rsplit("meshes", 1)[0]
-    completed = []
-    count = 0
     
-    # Check if corresponding output files exist
+    REMESH_DIR = BASE_DIR.rsplit("meshes", 1)[0]
+    output_base_dir = os.path.join(REMESH_DIR, "remeshes_v2")
+    completed = []
+    
+    # Check if output base directory exists before scanning
+    if not os.path.exists(output_base_dir):
+        print(f"⚠️ Output directory {output_base_dir} does not exist yet. No completed files to detect.")
+        return completed
+    
+    print(f"🔍 Scanning output directory for existing files...")
+    start_time = time.time()
+    
+    # Get a set of all existing output files (much faster than checking one by one)
+    existing_outputs = set()
+    try:
+        # Use os.walk to efficiently scan the directory tree
+        for root, dirs, files in os.walk(output_base_dir):
+            # Get relative path from output base directory
+            rel_root = os.path.relpath(root, output_base_dir)
+            
+            # Skip the root directory in the path calculation
+            if rel_root == '.':
+                rel_root = ''
+                
+            # Add all files with their relative paths
+            for file in files:
+                rel_path = os.path.join(rel_root, file)
+                existing_outputs.add(rel_path)
+                
+        print(f"📊 Found {len(existing_outputs)} files in output directory (scan took {time.time() - start_time:.2f}s)")
+    except Exception as e:
+        print(f"⚠️ Error scanning output directory: {str(e)}")
+        return completed
+    
+    # Match input files with existing output files
+    match_count = 0
+    print("🔄 Matching with input files...")
+    match_start = time.time()
+    
     for rel_path in all_relative_paths:
         input_path = os.path.join(BASE_DIR, rel_path)
-        output_path = os.path.join(REMESH_DIR, "remeshes_v2", rel_path)
         
-        # If output exists, mark as completed
-        if os.path.exists(output_path):
+        # Check if this file exists in our set of output files
+        if rel_path in existing_outputs:
             completed.append(input_path)
-            count += 1
-            
-        # Print progress occasionally
-        if count % 1000 == 0 and count > 0:
-            print(f"   Scanning... found {count} completed files")
-            
+            match_count += 1
+    
+    print(f"✅ Matched {match_count} completed files (matching took {time.time() - match_start:.2f}s)")
     return completed
 
 def save_progress(completed_tasks, failed_tasks):
