@@ -16,6 +16,10 @@ except ImportError:
     print("⚠️ tqdm not installed, basic progress reporting will be used.")
     print("   You can install it with: pip install tqdm")
 
+# Determine if this process should show progress bars (only master node by default)
+PROCESS_RANK = int(os.getenv("RANK", "0"))
+SHOW_PROGRESS = PROCESS_RANK == 0  # Only show progress on master node by default
+
 BASE_DIR = "/cpfs05/shared/landmark_3dgen/lvzhaoyang_group/shape2code/datasets/part2code/meshes"
 VOXEL_SIZE = 0.005
 TARGET_FACES = 50000
@@ -150,12 +154,49 @@ def save_progress(completed_tasks, failed_tasks):
     with open(progress_files["failed"], "w") as f:
         json.dump(failed_tasks, f, indent=2)
 
-def get_file_size(file_path):
-    """Get file size in bytes, returns 0 if file doesn't exist"""
+def get_file_size(file_path, size_cache=None):
+    """Get file size in bytes, returns 0 if file doesn't exist
+    
+    Args:
+        file_path: Path to the file
+        size_cache: Optional dictionary to cache file sizes
+    """
+    if size_cache is not None and file_path in size_cache:
+        return size_cache[file_path]
+        
     try:
-        return os.path.getsize(file_path)
+        size = os.path.getsize(file_path)
+        if size_cache is not None:
+            size_cache[file_path] = size
+        return size
     except (FileNotFoundError, OSError):
+        if size_cache is not None:
+            size_cache[file_path] = 0
         return 0
+
+def get_size_cache_path():
+    """Get path to the file size cache"""
+    return os.path.join(PROGRESS_DIR, "file_size_cache.json")
+
+def load_size_cache():
+    """Load file size cache from disk"""
+    cache_path = get_size_cache_path()
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
+
+def save_size_cache(cache):
+    """Save file size cache to disk"""
+    cache_path = get_size_cache_path()
+    try:
+        with open(cache_path, "w") as f:
+            json.dump(cache, f)
+    except IOError:
+        pass  # Silently fail if we can't save the cache
 
 def get_tasks(limit=None, resume=True, balance_by_size=False):
     """Get tasks to process with optional size-based distribution"""
@@ -181,11 +222,36 @@ def get_tasks(limit=None, resume=True, balance_by_size=False):
     if balance_by_size and world_size > 1:
         # Size-based load balancing
         print("⚖️ Using file size-based load balancing...")
+        start_time = time.time()
+        
+        # Load cached file sizes to speed up the process
+        size_cache = load_size_cache()
+        initial_cache_size = len(size_cache)
         
         # Get file sizes and sort paths by size (largest first)
-        sized_paths = [(get_file_size(input_path), input_path, output_path, rel_path) 
-                      for input_path, output_path, rel_path in all_paths]
-        sized_paths.sort(reverse=True)  # Sort by size, largest first
+        sized_paths = []
+        for i, (input_path, output_path, rel_path) in enumerate(all_paths):
+            # Show progress periodically for large datasets
+            if SHOW_PROGRESS and i % 1000 == 0 and i > 0:
+                print(f"\r⏳ Getting file sizes: {i}/{len(all_paths)} ({i/len(all_paths)*100:.1f}%)", end="", flush=True)
+                
+            size = get_file_size(input_path, size_cache)
+            sized_paths.append((size, input_path, output_path, rel_path))
+            
+        if SHOW_PROGRESS:
+            print()  # New line after progress output
+            
+        # Save the updated cache for future runs
+        if len(size_cache) > initial_cache_size:
+            save_size_cache(size_cache)
+            new_entries = len(size_cache) - initial_cache_size
+            print(f"💾 Updated file size cache with {new_entries} new entries")
+            
+        # Sort by size (largest first)
+        print("🔄 Sorting files by size...")
+        sized_paths.sort(reverse=True)
+        
+        print(f"⏱️ Size-based sorting completed in {time.time() - start_time:.2f} seconds")
         
         # Distribute tasks in a round-robin fashion by size
         node_assignments = [[] for _ in range(world_size)]
@@ -268,8 +334,9 @@ def run_blender_remesh(task):
     os.makedirs(output_dir, exist_ok=True)
     
     # Don't print here if using tqdm to avoid breaking progress bar
-    if not TQDM_AVAILABLE or 'progress_bar' not in globals():
-        print(f"🚀 [START] {input_path}")
+    if not (TQDM_AVAILABLE and SHOW_PROGRESS) or 'progress_bar' not in globals():
+        if SHOW_PROGRESS:
+            print(f"🚀 [START] {input_path}")
         
     cmd = [
         "blender", "--background",
@@ -284,8 +351,9 @@ def run_blender_remesh(task):
         result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
         # Don't print here if using tqdm to avoid breaking progress bar
-        if not TQDM_AVAILABLE or 'progress_bar' not in globals():
-            print(f"✅ [DONE]  {output_path}")
+        if not (TQDM_AVAILABLE and SHOW_PROGRESS) or 'progress_bar' not in globals():
+            if SHOW_PROGRESS:
+                print(f"✅ [DONE]  {output_path}")
         
         # Track successful completion
         if input_path not in completed_tasks:
@@ -299,9 +367,10 @@ def run_blender_remesh(task):
         error_msg = e.stderr.decode(errors='ignore')[:200] + "..." if len(e.stderr) > 200 else e.stderr.decode(errors='ignore')
         
         # Don't print here if using tqdm to avoid breaking progress bar
-        if not TQDM_AVAILABLE or 'progress_bar' not in globals():
-            print(f"❌ [FAIL]  {input_path}")
-            print(f"    ↳ stderr: {error_msg}")  # 部分报错信息
+        if not (TQDM_AVAILABLE and SHOW_PROGRESS) or 'progress_bar' not in globals():
+            if SHOW_PROGRESS:
+                print(f"❌ [FAIL]  {input_path}")
+                print(f"    ↳ stderr: {error_msg}")  # 部分报错信息
         
         # Log errors to a dedicated file for better debugging
         try:
@@ -343,22 +412,24 @@ def process_tasks_dynamic(tasks, num_processes=MAX_PROCESSES):
     total_tasks = len(tasks)
     processed_count = 0
     
-    # Create progress bar
-    if TQDM_AVAILABLE:
-        progress_bar = tqdm(total=total_tasks, desc="Processing", unit="file", 
-                          bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+    # Create progress bar (only on master node)
+    if TQDM_AVAILABLE and SHOW_PROGRESS:
+        # Force buffer flushing for real-time updates
+        progress_bar = tqdm(total=total_tasks, desc="Processing", unit="file",
+                         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                         mininterval=0.1)  # Update more frequently
     
     # Progress tracking
     def update_progress(input_path, success):
         nonlocal processed_count
         processed_count += 1
         
-        # Update the progress bar if available
-        if TQDM_AVAILABLE:
+        # Update the progress bar if available and on master node
+        if TQDM_AVAILABLE and SHOW_PROGRESS:
             status = "✅" if success else "❌"
             progress_bar.set_postfix_str(f"{status} {os.path.basename(input_path)}")
             progress_bar.update(1)
-        else:
+        elif SHOW_PROGRESS:
             # Fallback to simple progress indicator
             status = "Done" if success else "Failed"
             print(f"\r🔄 Progress: {processed_count}/{total_tasks} ({processed_count/total_tasks*100:.1f}%) - {status}: {os.path.basename(input_path)}", end="", flush=True)
@@ -380,9 +451,9 @@ def process_tasks_dynamic(tasks, num_processes=MAX_PROCESSES):
                     run_blender_remesh(task)
                     success = True
                 except Exception as e:
-                    if TQDM_AVAILABLE:
+                    if TQDM_AVAILABLE and SHOW_PROGRESS:
                         progress_bar.write(f"🔥 Unexpected error processing {input_path}: {str(e)}")
-                    else:
+                    elif SHOW_PROGRESS:
                         print(f"\n🔥 Unexpected error processing {input_path}: {str(e)}")
                 
                 # Update tracking
@@ -427,8 +498,8 @@ def process_tasks_dynamic(tasks, num_processes=MAX_PROCESSES):
             with open(progress_files["failed"], "w") as f:
                 json.dump(failed, f, indent=2)
     
-    # Close progress bar if using tqdm
-    if TQDM_AVAILABLE:
+    # Close progress bar if using tqdm and on master node
+    if TQDM_AVAILABLE and SHOW_PROGRESS:
         progress_bar.close()
         
     elapsed_time = time.time() - start_time
@@ -461,10 +532,28 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--log-file", type=str, help="Path to log file (default: progress_dir/batch_log.txt)")
     parser.add_argument("--auto-detect", action="store_true", help="Auto-detect completed tasks from existing output files")
+    parser.add_argument("--show-progress", action="store_true", help="Show progress bars on all nodes, not just master")
+    parser.add_argument("--hide-progress", action="store_true", help="Hide progress bars on all nodes, including master")
+    parser.add_argument("--clear-cache", action="store_true", help="Clear cached file sizes and other cached data")
     args = parser.parse_args()
     
     # Update progress directory from command line
     PROGRESS_DIR = args.progress_dir
+    
+    # Update progress bar visibility settings
+    global SHOW_PROGRESS
+    if args.show_progress:
+        SHOW_PROGRESS = True  # Show on all nodes
+    elif args.hide_progress:
+        SHOW_PROGRESS = False  # Hide on all nodes
+    # Otherwise use the default (show only on master node)
+    
+    # Clear cache if requested
+    if args.clear_cache:
+        cache_path = get_size_cache_path()
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+            print(f"🗑️ Cleared file size cache: {cache_path}")
     
     # Set up logging to file if requested
     if args.log_file or args.verbose:
@@ -535,13 +624,15 @@ def main():
             completed, failed = process_tasks_dynamic(tasks, num_processes=MAX_PROCESSES)
         else:
             # Use standard multiprocessing pool with progress bar
-            if TQDM_AVAILABLE:
+            if TQDM_AVAILABLE and SHOW_PROGRESS:
                 with Pool(processes=MAX_PROCESSES) as pool:
+                    # Force immediate display with minimal update interval
                     results = list(tqdm(pool.imap(run_blender_remesh, tasks), 
                                         total=len(tasks),
                                         desc="Processing", 
                                         unit="file",
-                                        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"))
+                                        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                                        mininterval=0.1))  # Update more frequently
             else:
                 # Fallback to regular pool without progress bar
                 with Pool(processes=MAX_PROCESSES) as pool:
