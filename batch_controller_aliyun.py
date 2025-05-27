@@ -7,7 +7,7 @@ import multiprocessing
 from multiprocessing import Pool, Manager
 from functools import lru_cache
 
-BASE_DIR = "/cpfs05/shared/landmark_3dgen/lvzhaoyang_group/shape2code/datasets/part2code/meshes"
+BASE_DIR = "/oss/lvzhaoyang/shape2code/Infinigen/meshes"
 VOXEL_SIZE = 0.005
 TARGET_FACES = 50000
 # Dynamically adjust MAX_PROCESSES based on CPU cores, but keep within reasonable limits
