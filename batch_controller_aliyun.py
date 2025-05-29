@@ -243,17 +243,23 @@ def run_blender_remesh(task):
     try:
         # We already calculated rel_path at the start of the function
         result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"✅ [DONE]  {output_path}")
         
-        # Mark as done - using already calculated rel_path
-        done_paths.add(rel_path)
-        
-        # Also add to existing files cache to avoid future filesystem checks
-        rel_output = os.path.relpath(output_path, os.path.join(REMESH_DIR, "remeshes_v3"))
-        existing_output_files.add(rel_output)
+        # Verify the output file was actually created
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            print(f"✅ [DONE]  {output_path}")
+            
+            # Mark as done - using already calculated rel_path
+            done_paths.add(rel_path)
+            
+            # Also add to existing files cache to avoid future filesystem checks
+            rel_output = os.path.relpath(output_path, os.path.join(REMESH_DIR, "remeshes_v3"))
+            existing_output_files.add(rel_output)
+        else:
+            print(f"❌ [VERIFY FAILED] {output_path} was not created properly")
+            print(f"    ↳ Process completed but output file is missing or empty")
     except subprocess.CalledProcessError as e:
         print(f"❌ [FAIL]  {input_path}")
-        print(f"    ↳ stderr: {e.stderr.decode(errors='ignore')[:200]}...")  # 部分报错信息
+        print(f"    ↳ stderr: {e.stderr.decode(errors='ignore')[:200]}...")  # Error message
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -267,19 +273,38 @@ if __name__ == "__main__":
         print("❌ No tasks to process. Exiting.")
         exit(1)
         
-    # Pre-create all needed output directories in one pass
+    # Pre-create all needed output directories by replicating meshes/ structure in remeshes_v3/
     print("💾 Pre-creating output directories...")
-    needed_dirs = set()
-    for _, output_path in tasks:
-        needed_dirs.add(cached_dirname(output_path))
+    source_dir = os.path.join(REMESH_DIR, "meshes")
+    output_dir = os.path.join(REMESH_DIR, "remeshes_v3")
     
-    # Create directories in batches
-    for dir_path in needed_dirs:
+    # Create the root output directory
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except Exception as e:
+        print(f"⚠️ Could not create root directory {output_dir}: {e}")
+        exit(1)  # Exit if we can't create the root directory
+    
+    # Walk through the source directory structure and replicate it
+    created_dirs = set()
+    for root, dirs, _ in os.walk(source_dir):
+        # Calculate corresponding output directory
+        rel_path = os.path.relpath(root, source_dir)
+        if rel_path == ".":
+            continue  # Skip the root directory as we already created it
+            
+        target_dir = os.path.join(output_dir, rel_path)
+        if target_dir in created_dirs:
+            continue  # Skip if already created
+            
         try:
-            os.makedirs(dir_path, exist_ok=True)
+            os.makedirs(target_dir, exist_ok=True)
+            created_dirs.add(target_dir)
+            print(f"📁 Created directory: {target_dir}")
         except Exception as e:
-            # Just log and continue if we can't create a directory
-            print(f"⚠️ Could not create directory {dir_path}: {e}")
+            print(f"⚠️ Could not create directory {target_dir}: {e}")
+    
+    print(f"✅ Created {len(created_dirs)} output directories")
         
     # Start the flush thread
     stop_event = threading.Event()
